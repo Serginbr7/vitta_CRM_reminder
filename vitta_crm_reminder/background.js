@@ -3,6 +3,11 @@ const GROUPS_KEY = "vittaReminderGroups";
 const FIRED_KEY = "vittaReminderFired";
 const SIG_KEY = "vittaReminderSig";
 
+// Alarme de sincronização: reexecuta a última consulta /api/activities do CRM
+// de tempos em tempos. Começa com 1 min e repete a cada SYNC_INTERVAL_MIN.
+const SYNC_ALARM = "vitta-reminder-sync";
+const SYNC_INTERVAL_MIN = 5;
+
 chrome.runtime.onMessage.addListener(message => {
   if (message?.type === "ACTIVITIES_DATA" && message.payload) {
     processActivities(message.payload).catch(() => {});
@@ -10,9 +15,39 @@ chrome.runtime.onMessage.addListener(message => {
 });
 
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === SYNC_ALARM) {
+    requestSync().catch(() => {});
+    return;
+  }
   if (!alarm.name.startsWith(PREFIX)) return;
   fireAlert(alarm.name).catch(() => {});
 });
+
+// Cria o alarme de sincronização de forma idempotente
+chrome.alarms.get(SYNC_ALARM, alarm => {
+  if (!alarm) {
+    chrome.alarms.create(SYNC_ALARM, {
+      periodInMinutes: SYNC_INTERVAL_MIN,
+      delayInMinutes: 1
+    });
+  }
+});
+
+// Pede refresh imediato ao trocar para uma aba do CRM
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId).then(tab => {
+    if (tab.url?.startsWith("https://crm.nave.app.br/")) {
+      chrome.tabs.sendMessage(tabId, { type: "REFRESH_ACTIVITIES" }).catch(() => {});
+    }
+  }).catch(() => {});
+});
+
+async function requestSync() {
+  const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
+  const tab = tabs.find(t => t.active) || tabs[0];
+  if (tab?.id == null) return;
+  chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ACTIVITIES" }).catch(() => {});
+}
 
 function localDateParts(date) {
   const pad = n => String(n).padStart(2, "0");
@@ -85,7 +120,6 @@ async function processActivities(payload) {
   });
 
   // Remove da lista de "já disparados" tudo que não corresponde a um grupo atual.
-  // Evita crescimento infinito do storage quando tarefas são concluídas/removidas.
   const validFiredKeys = new Set();
   for (const g of allGroups) {
     validFiredKeys.add(`${g.key}:before`);
@@ -99,7 +133,6 @@ async function processActivities(payload) {
   }
 
   // Só recria alarms se o conjunto de grupos agendados mudou.
-  // Evita "churn" a cada resposta da API (o page-hook dispara em toda resposta de /api/activities).
   const sig = allGroups.map(g => `${g.key}@${g.timestamp}`).sort().join("|");
   const lastSig = (await chrome.storage.local.get(SIG_KEY))[SIG_KEY];
   if (sig === lastSig) return;
@@ -139,8 +172,6 @@ async function fireAlert(alarmName) {
 
   const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
   if (!tabs.length) return;
-  // Uma única aba: preferimos a ativa (senão a primeira). Evita popup duplicado
-  // quando o usuário tem várias abas do CRM abertas.
   const tab = tabs.find(t => t.active) || tabs[0];
   if (tab?.id == null) return;
 

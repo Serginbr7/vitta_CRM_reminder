@@ -14,8 +14,20 @@
     chrome.runtime.sendMessage({ type: "ACTIVITIES_DATA", payload: msg.payload }).catch(() => {});
   });
 
+  // Pede ao page-hook que refaça a última consulta (mantém a extensão atualizada sem F5)
+  function requestRefresh() {
+    window.postMessage({ source: "vitta-crm-reminder", type: "REFRESH_ACTIVITIES" }, location.origin);
+  }
+
   chrome.runtime.onMessage.addListener(message => {
-    if (message && message.type === "SHOW_GROUP_ALERT") showAlert(message.group, message.stage);
+    if (!message) return;
+    if (message.type === "SHOW_GROUP_ALERT") showAlert(message.group, message.stage);
+    if (message.type === "REFRESH_ACTIVITIES") requestRefresh();
+  });
+
+  // Quando o usuário volta pra aba do CRM, atualiza na hora
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") requestRefresh();
   });
 
   // Cores da borda lateral seguem o padrão dos cards do CRM
@@ -160,7 +172,6 @@
     style.textContent = CSS;
 
     const panel = el("section", "panel");
-    // Acessibilidade: anuncia o alerta para leitores de tela
     panel.setAttribute("role", "alert");
     panel.setAttribute("aria-live", "assertive");
 
@@ -192,7 +203,6 @@
     shadow.append(style, panel);
     document.documentElement.append(host);
 
-    // Fecha por X ou Escape, e limpa os listeners junto
     const ac = new AbortController();
     const dismiss = () => {
       window.clearTimeout(closeTimer);
