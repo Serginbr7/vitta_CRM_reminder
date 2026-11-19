@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font:14px Roboto,Arial,sans-serif;width:290px;padding:14px;color:#424242;background:#f5f9fd;margin:0}
+    .brand{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+    .brand img{width:44px;height:44px;border-radius:10px}
+    h1{font-size:16px;font-weight:500;margin:0;color:#1356ae}
+    p{line-height:1.45;color:#616161;margin:10px 0}
+    .status{padding:10px 12px;background:#fff;border-left:4px solid #81c784;border-radius:4px;color:#424242;
+      box-shadow:0 1px 5px rgba(0,0,0,.14),0 2px 2px rgba(0,0,0,.08)}
+    button{margin-top:4px;border:1px solid #cfd8e3;background:#fff;color:#1356ae;border-radius:4px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12px}
+    button:hover{background:#eef4fb}
+    .test{background:#fff;border-radius:4px;padding:10px 12px;margin:12px 0;box-shadow:0 1px 5px rgba(0,0,0,.14),0 2px 2px rgba(0,0,0,.08)}
+    .test__title{font-weight:500;color:#212121;margin-bottom:8px}
+    .test__qty{display:block;font-size:12px;color:#616161;margin-bottom:8px}
+    .test__qty select{font:inherit;font-size:12px;margin-left:4px}
+    .test__btns{display:flex;gap:6px}
+    .t{flex:1;margin:0;padding:7px 4px;color:#212121;border:0;font-weight:500}
+    .t--success{background:#81c784}.t--success:hover{background:#6fbb73}
+    .t--warning{background:#ffd54f}.t--warning:hover{background:#f7c92f}
+    .t--late{background:#e57373;color:#fff}.t--late:hover{background:#d95f5f}
+    .test__msg{font-size:12px;color:#757575;margin-top:8px;min-height:16px}
+  </style>
+</head>
+<body>
+  <div class="brand">
+    <img src="icon128.png" alt="Logo Vitta CRM Reminder">
+    <h1>Vitta CRM Reminder</h1>
+  </div>
+  <div class="status" id="status">Aguardando dados do Nave CRM…</div>
+  <p>Deixe o Nave CRM aberto em uma aba. Os alertas são agrupados por horário e aparecem 5 minutos antes, no horário e 5 minutos depois.</p>
+  <p>Fechar um popup não conclui as tarefas. Cada aviso desaparece automaticamente em 15 segundos.</p>
+  <div class="test">
+    <div class="test__title">Painel de teste</div>
+    <label class="test__qty">Tarefas no alerta:
+      <select id="qty"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option></select>
+    </label>
+    <div class="test__btns">
+      <button class="t t--success" data-stage="before" type="button">5 min antes</button>
+      <button class="t t--warning" data-stage="ontime" type="button">No horário</button>
+      <button class="t t--late" data-stage="after" type="button">5 min depois</button>
+    </div>
+    <div class="test__msg" id="testMsg"></div>
+  </div>
+  <button id="copyKeys" type="button">Copiar nomes dos campos da API</button>
+  <script src="popup.js"></script>
+</body>
+</html>

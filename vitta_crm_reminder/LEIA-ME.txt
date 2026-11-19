@@ -1,0 +1,29 @@
+VITTA CRM REMINDER — VERSÃO 0.2.2
+
+INSTALAÇÃO
+1. Extraia o arquivo ZIP para uma pasta.
+2. Abra chrome://extensions no Chrome.
+3. Ative "Modo do desenvolvedor".
+4. Clique em "Carregar sem compactação".
+5. Selecione a pasta vitta_crm_reminder.
+6. Deixe o Nave CRM aberto em uma aba e acesse/atualize a tela de tarefas.
+
+COMPORTAMENTO
+- Captura respostas da rota /api/activities feitas pelo próprio Nave CRM.
+- Agrupa tarefas pelo mesmo horário local.
+- Usa o campo date; se vier somente uma data sem horário, assume 10:00.
+- Ignora atividades com is_finished=true.
+- Mostra um popup visual por grupo em três momentos: 5 min antes, no horário e 5 min depois.
+- Cada popup fecha sozinho em 15 segundos e possui botão X.
+- Fechar o popup não conclui a tarefa.
+
+LIMITAÇÕES DESTA VERSÃO DE TESTE
+- A extensão só recebe os dados quando o Nave CRM faz a consulta da rota /api/activities. Mantenha a tela de tarefas aberta e atualize-a para a primeira captura.
+- A consulta observada usa paginação (limit/offset). Esta versão agrupa os registros recebidos; ainda precisamos validar se o CRM carrega todas as páginas necessárias.
+- O agendamento depende de o Chrome estar aberto e de uma aba do Nave CRM existir quando o alerta disparar.
+- A aparência e o funcionamento precisam ser testados na conta real antes de considerar a extensão pronta para uso diário.
+
+SEGURANÇA
+- Não inclui token, senha ou cookie.
+- Não copie credenciais do CRM para arquivos da extensão.
+- O código apenas observa respostas JSON da API solicitadas pelo próprio aplicativo.
