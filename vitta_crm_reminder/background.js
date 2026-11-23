@@ -1,16 +1,26 @@
 const PREFIX = "vitta-reminder:";
 const GROUPS_KEY = "vittaReminderGroups";
 const FIRED_KEY = "vittaReminderFired";
-const SIG_KEY = "vittaReminderSig";
+const ACT_KEY = "vittaReminderActivities";
+const STAGE_LABEL = { before: "em 5 minutos", ontime: "agora", after: "há 5 minutos" };
 
 // Alarme de sincronização: reexecuta a última consulta /api/activities do CRM
 // de tempos em tempos. Começa com 1 min e repete a cada SYNC_INTERVAL_MIN.
 const SYNC_ALARM = "vitta-reminder-sync";
 const SYNC_INTERVAL_MIN = 5;
 
+// ---------- Mensagens e eventos ----------
+
+// Fila para processar uma resposta por vez (evita corrida entre várias respostas simultâneas)
+let queue = Promise.resolve();
+function enqueue(fn) {
+  queue = queue.then(fn).catch(() => {});
+  return queue;
+}
+
 chrome.runtime.onMessage.addListener(message => {
   if (message?.type === "ACTIVITIES_DATA" && message.payload) {
-    processActivities(message.payload).catch(() => {});
+    enqueue(() => processActivities(message.payload));
   }
 });
 
@@ -33,6 +43,10 @@ chrome.alarms.get(SYNC_ALARM, alarm => {
   }
 });
 
+// Ao instalar/atualizar/iniciar o Chrome, recria os alarmes a partir do que está salvo
+chrome.runtime.onInstalled.addListener(() => enqueue(reconcileAlarms));
+chrome.runtime.onStartup.addListener(() => enqueue(reconcileAlarms));
+
 // Pede refresh imediato ao trocar para uma aba do CRM
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then(tab => {
@@ -42,12 +56,26 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   }).catch(() => {});
 });
 
+// Clicar na notificação do sistema foca/abre o CRM
+chrome.notifications.onClicked.addListener(async id => {
+  chrome.notifications.clear(id);
+  const [tab] = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+  } else {
+    chrome.tabs.create({ url: "https://crm.nave.app.br/activities" });
+  }
+});
+
 async function requestSync() {
   const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
   const tab = tabs.find(t => t.active) || tabs[0];
   if (tab?.id == null) return;
   chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ACTIVITIES" }).catch(() => {});
 }
+
+// ---------- Utilitários ----------
 
 function localDateParts(date) {
   const pad = n => String(n).padStart(2, "0");
@@ -87,14 +115,43 @@ function activityDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function isFinished(activity) {
+  if (activity.is_finished === true) return true;
+  const status = String(activity.status || "").toLowerCase();
+  return ["finished", "completed", "concluded", "concluida", "concluída", "concluído"].includes(status);
+}
+
+// ---------- Processamento ----------
+
 async function processActivities(payload) {
-  const activities = Array.isArray(payload.results) ? payload.results : [];
+  const incoming = Array.isArray(payload.results) ? payload.results : [];
+
+  // Mescla com o que já temos (por uuid) em vez de sobrescrever
+  const store = (await chrome.storage.local.get(ACT_KEY))[ACT_KEY] || {};
+  for (const a of incoming) if (a?.uuid) store[a.uuid] = a;
+
+  // Descarta atividades com mais de 24h
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [id, a] of Object.entries(store)) {
+    const d = activityDate(a.date);
+    if (!d || d.getTime() < cutoff) delete store[id];
+  }
+
+  await chrome.storage.local.set({
+    [ACT_KEY]: store,
+    vittaReminderSampleKeys: incoming.length ? flattenKeys(incoming[0]) : []
+  });
+
+  await reconcileAlarms();
+}
+
+// Monta os grupos a partir das atividades salvas e sincroniza os alarmes
+async function reconcileAlarms() {
+  const store = (await chrome.storage.local.get(ACT_KEY))[ACT_KEY] || {};
   const groups = new Map();
 
-  for (const activity of activities) {
-    if (activity.is_finished === true) continue;
-    const status = String(activity.status || "").toLowerCase();
-    if (["finished", "completed", "concluded", "concluida", "concluído"].includes(status)) continue;
+  for (const activity of Object.values(store)) {
+    if (isFinished(activity)) continue;
 
     const date = activityDate(activity.date);
     if (!date) continue;
@@ -115,66 +172,77 @@ async function processActivities(payload) {
 
   const allGroups = [...groups.values()];
   await chrome.storage.local.set({
-    [GROUPS_KEY]: Object.fromEntries(allGroups.map(g => [g.key, g])),
-    vittaReminderSampleKeys: activities.length ? flattenKeys(activities[0]) : []
+    [GROUPS_KEY]: Object.fromEntries(allGroups.map(g => [g.key, g]))
   });
 
-  // Remove da lista de "já disparados" tudo que não corresponde a um grupo atual.
-  const validFiredKeys = new Set();
-  for (const g of allGroups) {
-    validFiredKeys.add(`${g.key}:before`);
-    validFiredKeys.add(`${g.key}:ontime`);
-    validFiredKeys.add(`${g.key}:after`);
-  }
+  // Limpa "já disparados" de grupos que não existem mais
+  const valid = new Set(allGroups.flatMap(g => ["before", "ontime", "after"].map(s => `${g.key}:${s}`)));
   const fired = (await chrome.storage.local.get(FIRED_KEY))[FIRED_KEY] || {};
-  const pruned = Object.fromEntries(Object.entries(fired).filter(([k]) => validFiredKeys.has(k)));
-  if (Object.keys(pruned).length !== Object.keys(fired).length) {
-    await chrome.storage.local.set({ [FIRED_KEY]: pruned });
-  }
+  const pruned = Object.fromEntries(Object.entries(fired).filter(([k]) => valid.has(k)));
+  await chrome.storage.local.set({ [FIRED_KEY]: pruned });
 
-  // Só recria alarms se o conjunto de grupos agendados mudou.
-  const sig = allGroups.map(g => `${g.key}@${g.timestamp}`).sort().join("|");
-  const lastSig = (await chrome.storage.local.get(SIG_KEY))[SIG_KEY];
-  if (sig === lastSig) return;
-
-  const existing = await chrome.alarms.getAll();
-  await Promise.all(existing.filter(a => a.name.startsWith(PREFIX)).map(a => chrome.alarms.clear(a.name)));
-
+  // Reconcilia alarmes: cria os que faltam, remove os que sobraram
   const now = Date.now();
-  for (const group of allGroups) {
+  const wanted = new Map();
+  for (const g of allGroups) {
     const moments = [
-      ["before", group.timestamp - 5 * 60 * 1000],
-      ["ontime", group.timestamp],
-      ["after", group.timestamp + 5 * 60 * 1000]
+      ["before", g.timestamp - 5 * 60000],
+      ["ontime", g.timestamp],
+      ["after", g.timestamp + 5 * 60000]
     ];
     for (const [stage, when] of moments) {
-      if (when > now + 1000) {
-        chrome.alarms.create(`${PREFIX}${group.key}:${stage}`, { when });
+      if (when > now + 1000 && !pruned[`${g.key}:${stage}`]) {
+        wanted.set(`${PREFIX}${g.key}:${stage}`, when);
       }
     }
   }
 
-  await chrome.storage.local.set({ [SIG_KEY]: sig });
+  const existing = (await chrome.alarms.getAll()).filter(a => a.name.startsWith(PREFIX));
+  const existingMap = new Map(existing.map(a => [a.name, a.scheduledTime]));
+  for (const name of existingMap.keys()) {
+    if (!wanted.has(name)) await chrome.alarms.clear(name);
+  }
+  for (const [name, when] of wanted) {
+    if (existingMap.get(name) !== when) chrome.alarms.create(name, { when });
+  }
 }
+
+// ---------- Disparo do alerta ----------
 
 async function fireAlert(alarmName) {
   const suffix = alarmName.slice(PREFIX.length);
   const splitAt = suffix.lastIndexOf(":");
   const key = suffix.slice(0, splitAt);
   const stage = suffix.slice(splitAt + 1);
-  const fired = (await chrome.storage.local.get(FIRED_KEY))[FIRED_KEY] || {};
   const firedKey = `${key}:${stage}`;
+
+  const fired = (await chrome.storage.local.get(FIRED_KEY))[FIRED_KEY] || {};
   if (fired[firedKey]) return;
 
   const groups = (await chrome.storage.local.get(GROUPS_KEY))[GROUPS_KEY] || {};
   const group = groups[key];
   if (!group || !group.tasks?.length) return;
 
-  const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
-  if (!tabs.length) return;
-  const tab = tabs.find(t => t.active) || tabs[0];
-  if (tab?.id == null) return;
-
+  // Marca como disparado já, porque a notificação do sistema sempre é entregue
   await chrome.storage.local.set({ [FIRED_KEY]: { ...fired, [firedKey]: true } });
-  chrome.tabs.sendMessage(tab.id, { type: "SHOW_GROUP_ALERT", group, stage }).catch(() => {});
+
+  // 1) Notificação do sistema (aparece mesmo fora da aba do CRM)
+  const names = group.tasks.map(t => t.customer_name || "Cliente").slice(0, 4).join("\n");
+  chrome.notifications.create(`vitta:${firedKey}`, {
+    type: "basic",
+    iconUrl: "icon128.png",
+    title: `${group.tasks.length} tarefa(s) ${STAGE_LABEL[stage] || ""} · ${group.time}`,
+    message: names,
+    priority: 2,
+    requireInteraction: true
+  });
+
+  // 2) Popup dentro do CRM (se houver aba com content script)
+  const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
+  const tab = tabs.find(t => t.active) || tabs[0];
+  if (tab?.id != null) {
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "SHOW_GROUP_ALERT", group, stage });
+    } catch (_) {}
+  }
 }

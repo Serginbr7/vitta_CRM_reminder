@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Vitta CRM Reminder",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Agrupa tarefas do Nave CRM e mostra lembretes no horário.",
   "permissions": [
     "alarms",
     "storage",
-    "tabs"
+    "tabs",
+    "notifications"
   ],
   "host_permissions": [
     "https://crm.nave.app.br/*",
@@ -42,7 +43,7 @@
       "js": [
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "icons": {
