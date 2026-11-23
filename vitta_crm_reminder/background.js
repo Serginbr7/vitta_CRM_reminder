@@ -11,6 +11,9 @@ const STAGE_LABEL = { before: "em 5 minutos", ontime: "agora", after: "há 5 min
 const SYNC_ALARM = "vitta-reminder-sync";
 const SYNC_INTERVAL_MIN = 5;
 
+// Alarme usado pelo botão de teste do popup (alerta em janela)
+const TEST_ALARM = "vitta-test-window";
+
 // ---------- Mensagens e eventos ----------
 
 // Fila para processar uma resposta por vez (evita corrida entre várias respostas simultâneas)
@@ -39,6 +42,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === SYNC_ALARM) {
     requestSync().catch(() => {});
+    return;
+  }
+  if (alarm.name === TEST_ALARM) {
+    openAlertWindow("teste", "ontime", 3).catch(() => {});
     return;
   }
   if (!alarm.name.startsWith(PREFIX)) return;
@@ -238,23 +245,37 @@ async function fireAlert(alarmName) {
   // Marca como disparado já, porque a notificação do sistema sempre é entregue
   await chrome.storage.local.set({ [FIRED_KEY]: { ...fired, [firedKey]: true } });
 
-  // 1) Notificação do sistema (aparece mesmo fora da aba do CRM)
+  // 1) Notificação do sistema (aparece mesmo com o Chrome minimizado, se o sistema permitir)
   const names = group.tasks.map(t => t.customer_name || "Cliente").slice(0, 4).join("\n");
   chrome.notifications.create(`vitta:${firedKey}`, {
     type: "basic",
     iconUrl: "icon128.png",
     title: `${group.tasks.length} tarefa(s) ${STAGE_LABEL[stage] || ""} · ${group.time}`,
     message: names,
-    priority: 2,
-    requireInteraction: true
+    priority: 2
   });
 
-  // 2) Popup dentro do CRM (se houver aba com content script)
+  // 2) Se o CRM está visível na tela, mostra o popup dentro da página.
+  //    Caso contrário (minimizado, outra aba, outro programa), abre uma janela própria.
+  let shownInPage = false;
   const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
   const tab = tabs.find(t => t.active) || tabs[0];
   if (tab?.id != null) {
     try {
-      await chrome.tabs.sendMessage(tab.id, { type: "SHOW_GROUP_ALERT", group, stage });
+      const win = await chrome.windows.get(tab.windowId);
+      const visible = tab.active && win.focused && win.state !== "minimized";
+      if (visible) {
+        await chrome.tabs.sendMessage(tab.id, { type: "SHOW_GROUP_ALERT", group, stage });
+        shownInPage = true;
+      }
     } catch (_) {}
   }
+  if (!shownInPage) await openAlertWindow(key, stage, group.tasks.length);
+}
+
+// Abre uma janela de popup independente (alert.html) na frente de tudo
+async function openAlertWindow(key, stage, count) {
+  const height = Math.min(190 + count * 170, 720);
+  const url = chrome.runtime.getURL(`alert.html?key=${encodeURIComponent(key)}&stage=${encodeURIComponent(stage)}`);
+  await chrome.windows.create({ url, type: "popup", width: 420, height, focused: true });
 }
