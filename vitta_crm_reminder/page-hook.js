@@ -5,19 +5,30 @@
   const API_HOST = "crm-server.nave.app.br";
   const API_PATH_SUFFIX = "/api/activities";
 
-  // Última requisição bem-sucedida capturada do CRM — usada no refresh automático
+  // Última requisição de atividades observada (url, método, headers)
   let lastRequest = null;
+  // URL salva de sessões anteriores (vem do content script)
+  let storedUrl = null;
+  // Headers (ex.: Authorization) da requisição mais recente do CRM para a API.
+  // Ficam só em memória nesta página, nunca são gravados.
+  let authHeaders = {};
+  let storedReplayDone = false;
+
+  function parseUrl(rawUrl) {
+    try { return new URL(rawUrl, location.href); } catch { return null; }
+  }
 
   // Mesma validação para fetch e XHR — evita pegar URLs como /api/activities/123
   function matchActivitiesUrl(rawUrl) {
-    try {
-      const parsed = new URL(rawUrl, location.href);
-      if (parsed.hostname !== API_HOST) return null;
-      if (!parsed.pathname.endsWith(API_PATH_SUFFIX)) return null;
-      return parsed;
-    } catch {
-      return null;
-    }
+    const parsed = parseUrl(rawUrl);
+    if (!parsed) return null;
+    if (parsed.hostname !== API_HOST) return null;
+    if (!parsed.pathname.endsWith(API_PATH_SUFFIX)) return null;
+    return parsed;
+  }
+
+  function isApiHost(rawUrl) {
+    return parseUrl(rawUrl)?.hostname === API_HOST;
   }
 
   const send = (url, data) => {
@@ -46,6 +57,14 @@
     return { ...headers };
   }
 
+  function rememberAuth(headers) {
+    const h = cloneHeaders(headers);
+    if (Object.keys(h).length) {
+      authHeaders = h;
+      maybeReplayStored();
+    }
+  }
+
   function saveLastRequest(url, init) {
     try {
       lastRequest = {
@@ -58,14 +77,22 @@
 
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
+    const input = args[0];
+    let requestUrl = "";
+    try {
+      requestUrl = typeof input === "string" ? input : (input && input.url) || "";
+      if (isApiHost(requestUrl)) {
+        const h = args[1]?.headers || (input && typeof input === "object" ? input.headers : null);
+        rememberAuth(h);
+      }
+    } catch (_) {}
+
     const response = await originalFetch.apply(this, args);
     try {
-      const input = args[0];
-      const requestUrl = typeof input === "string" ? input :
-        (input && input.url) || "";
       if (matchActivitiesUrl(requestUrl)) {
+        const h = args[1]?.headers || (input && typeof input === "object" ? input.headers : null);
         response.clone().json().then(data => {
-          saveLastRequest(requestUrl, args[1] || {});
+          saveLastRequest(requestUrl, { method: args[1]?.method || input?.method, headers: h });
           send(requestUrl, data);
         }).catch(() => {});
       }
@@ -90,6 +117,9 @@
   };
 
   XMLHttpRequest.prototype.send = function(...args) {
+    try {
+      if (isApiHost(this.__vittaRequestUrl || "")) rememberAuth(this.__vittaHeaders);
+    } catch (_) {}
     this.addEventListener("load", function() {
       try {
         if (this.status < 200 || this.status >= 300) return;
@@ -103,31 +133,47 @@
     return originalSend.apply(this, args);
   };
 
-  // Reexecuta a última requisição observada (usa a mesma URL, método e headers,
-  // portanto reaproveita cookies/token do usuário). Só GET/HEAD para não arriscar
-  // criar/alterar nada no CRM.
+  // Reexecuta a consulta de atividades. Usa a última observada nesta página; se ainda não
+  // houve nenhuma, usa a URL salva de antes, com os headers de autenticação capturados
+  // de qualquer outra chamada do CRM. Só GET/HEAD, para não alterar nada no CRM.
   async function replayLastRequest() {
-    if (!lastRequest) return;
-    if (lastRequest.method !== "GET" && lastRequest.method !== "HEAD") return;
+    const target = lastRequest || (storedUrl ? { url: storedUrl, method: "GET", headers: authHeaders } : null);
+    if (!target) return false;
+    if (target.method !== "GET" && target.method !== "HEAD") return false;
     try {
-      const res = await originalFetch(lastRequest.url, {
-        method: lastRequest.method,
-        headers: lastRequest.headers,
+      const headers = Object.keys(target.headers || {}).length ? target.headers : authHeaders;
+      const res = await originalFetch(target.url, {
+        method: target.method,
+        headers,
         credentials: "include",
         cache: "no-store"
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const data = await res.json();
-      send(lastRequest.url, data);
-    } catch (_) {}
+      send(target.url, data);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  // Pedido de refresh vindo do content script (disparado pelo background ou foco da aba)
+  // Busca a URL salva uma vez por página; repete quando os headers de auth forem capturados
+  function maybeReplayStored() {
+    if (lastRequest || !storedUrl || storedReplayDone) return;
+    replayLastRequest().then(ok => { if (ok) storedReplayDone = true; });
+  }
+
   window.addEventListener("message", event => {
     if (event.source !== window) return;
     if (event.origin !== location.origin) return;
     const msg = event.data;
-    if (!msg || msg.source !== "vitta-crm-reminder" || msg.type !== "REFRESH_ACTIVITIES") return;
-    replayLastRequest();
+    if (!msg || msg.source !== "vitta-crm-reminder") return;
+
+    if (msg.type === "REFRESH_ACTIVITIES") {
+      replayLastRequest();
+    } else if (msg.type === "SET_ACTIVITIES_URL" && typeof msg.url === "string" && matchActivitiesUrl(msg.url)) {
+      storedUrl = msg.url;
+      maybeReplayStored();
+    }
   });
 })();

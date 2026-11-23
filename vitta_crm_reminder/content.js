@@ -11,13 +11,21 @@
     if (event.source !== window || event.origin !== location.origin) return;
     const msg = event.data;
     if (!msg || msg.source !== "vitta-crm-reminder" || msg.type !== "ACTIVITIES_DATA") return;
-    chrome.runtime.sendMessage({ type: "ACTIVITIES_DATA", payload: msg.payload }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "ACTIVITIES_DATA", payload: msg.payload, requestUrl: msg.requestUrl }).catch(() => {});
   });
 
   // Pede ao page-hook que refaça a última consulta (mantém a extensão atualizada sem F5)
   function requestRefresh() {
     window.postMessage({ source: "vitta-crm-reminder", type: "REFRESH_ACTIVITIES" }, location.origin);
   }
+
+  // Ao carregar qualquer página do CRM, entrega ao page-hook a URL da última consulta
+  // conhecida, para ele conseguir buscar as tarefas sem precisar abrir a tela de tarefas.
+  chrome.runtime.sendMessage({ type: "GET_ACTIVITIES_URL" }).then(res => {
+    if (res?.url) {
+      window.postMessage({ source: "vitta-crm-reminder", type: "SET_ACTIVITIES_URL", url: res.url }, location.origin);
+    }
+  }).catch(() => {});
 
   chrome.runtime.onMessage.addListener(message => {
     if (!message) return;

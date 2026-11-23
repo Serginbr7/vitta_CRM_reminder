@@ -57,3 +57,44 @@ document.querySelectorAll(".t").forEach(btn => {
     }
   });
 });
+
+// ---------- Diagnóstico ----------
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+async function renderDiag() {
+  const d = await chrome.storage.local.get(["vittaReminderActivities", "vittaReminderGroups", "vittaReminderLastCapture", "vittaReminderUrl"]);
+  const alarms = (await chrome.alarms.getAll()).filter(a => a.name.startsWith("vitta-reminder:"));
+  const now = Date.now();
+  const groups = Object.values(d.vittaReminderGroups || {});
+  const upcoming = groups.filter(g => g.timestamp + 5 * 60000 > now);
+  const upcomingTasks = upcoming.reduce((s, g) => s + g.tasks.length, 0);
+  const next = alarms.length ? Math.min(...alarms.map(a => a.scheduledTime)) : null;
+  const last = d.vittaReminderLastCapture;
+  document.getElementById("diag").textContent = [
+    `Última captura: ${last ? fmtTime(last) : "nunca"}`,
+    `URL da consulta salva: ${d.vittaReminderUrl ? "sim" : "não"}`,
+    `Atividades guardadas: ${Object.keys(d.vittaReminderActivities || {}).length}`,
+    `Tarefas pendentes futuras: ${upcomingTasks}`,
+    `Alarmes agendados: ${alarms.length}${next ? ` (próximo às ${fmtTime(next)})` : ""}`
+  ].join("\n");
+}
+renderDiag();
+
+document.getElementById("refreshNow").addEventListener("click", async () => {
+  const tabs = await chrome.tabs.query({ url: "https://crm.nave.app.br/*" });
+  const tab = tabs.find(t => t.active) || tabs[0];
+  if (tab?.id != null) await chrome.tabs.sendMessage(tab.id, { type: "REFRESH_ACTIVITIES" }).catch(() => {});
+  setTimeout(renderDiag, 1500);
+});
+
+document.getElementById("testNotif").addEventListener("click", () => {
+  chrome.notifications.create("vitta:teste", {
+    type: "basic",
+    iconUrl: "icon128.png",
+    title: "Teste de notificação",
+    message: "Se você viu isto, as notificações do sistema funcionam.",
+    priority: 2
+  });
+});

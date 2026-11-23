@@ -2,6 +2,8 @@ const PREFIX = "vitta-reminder:";
 const GROUPS_KEY = "vittaReminderGroups";
 const FIRED_KEY = "vittaReminderFired";
 const ACT_KEY = "vittaReminderActivities";
+const URL_KEY = "vittaReminderUrl";
+const CAPTURE_KEY = "vittaReminderLastCapture";
 const STAGE_LABEL = { before: "em 5 minutos", ontime: "agora", after: "há 5 minutos" };
 
 // Alarme de sincronização: reexecuta a última consulta /api/activities do CRM
@@ -18,9 +20,19 @@ function enqueue(fn) {
   return queue;
 }
 
-chrome.runtime.onMessage.addListener(message => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "ACTIVITIES_DATA" && message.payload) {
-    enqueue(() => processActivities(message.payload));
+    enqueue(async () => {
+      const meta = { [CAPTURE_KEY]: Date.now() };
+      if (message.requestUrl) meta[URL_KEY] = message.requestUrl;
+      await chrome.storage.local.set(meta);
+      await processActivities(message.payload);
+    });
+    return;
+  }
+  if (message?.type === "GET_ACTIVITIES_URL") {
+    chrome.storage.local.get(URL_KEY).then(d => sendResponse({ url: d[URL_KEY] || null }));
+    return true; // resposta assíncrona
   }
 });
 
